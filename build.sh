@@ -1,0 +1,1 @@
+clang++ -O0 -o paws paws.cc
