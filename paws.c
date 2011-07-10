@@ -1,39 +1,45 @@
-#import <stdio.h>
+#include <stdio>
+#include <deque>
 
 typedef uchar uint8_t;
+
+#define list_t(T) std::deque<T>*
+#define list_create(T) new std::deque<T>
+#define list_push(l, x) ((l)->push_back(x))
+#define list_free(l) delete l;
 
 ///////// PARSE TREE /////////
 // https://gist.github.com/86a8d5e776f09b4f9dfd
 
 typedef enum {
-    AST_SCOPE, // { expr ('\n' expr)* '}'
-    AST_JUXTA, // foo bar
-    AST_NAME, // aka "terminals". 
+    EXPR_SCOPE, // { expr ('\n' expr)* '}'
+    EXPR_JUXTA, // foo bar
+    EXPR_NAME, // aka "terminals". 
 } expr_kind_t;
 
-struct _expr_t;
 
-typedef struct {
-    struct _expr_t** items;
-} expr_scope_t;
+struct expr;
 
-typedef struct {
-    struct _expr_t* left;
-    struct _expr_t* right;
-} expr_juxta_t;
+struct expr_scope {
+    list_t(struct expr) items;
+};
 
-typedef struct {
+struct expr_juxta {
+    list_t(struct expr) items;
+};
+
+struct expr_name {
     const uchar* name;
-} expr_name_t;
+};
 
-typedef struct _expr_t {
+typedef struct expr {
     expr_kind_t kind;
     union {
-        expr_scope_t scope;
-        expr_juxta_t juxta;
-        expr_name_t name;
+        struct expr_scope scope;
+        struct expr_juxta juxta;
+        struct expr_name name;
     } inner;
-} expr_t;
+} *expr_t;
 
 
 
@@ -65,7 +71,7 @@ static void token_free(token_t tok) {
     free(tok.name);
 }
 
-token_t lex_token(const uchar **p, _Bool lookahead) {
+static token_t lex_token(const uchar **p, _Bool lookahead) {
     uchar c = **p;
     
     if (c == '\0') {
@@ -140,43 +146,111 @@ token_t lex_token(const uchar **p, _Bool lookahead) {
         *p += length;
     return token(NAME, namestr);
 }
-token_t consume_token(const uchar **p) {
+static token_t consume_token(const uchar **p) {
     return lex_token(p, true);
 }
-token_t lookahead_token(const uchar **p) {
+static token_t lookahead_token(const uchar **p) {
     return lex_token(p, false);
 }
 
 ast_t parse(const uchar *input) {
     parse_scope(&input, false);
 }
-expr_t parse_expr(const uchar **p) {
-    parse
-}
-expr_scope_t parse_scope(const uchar **p, _Bool expectBraces) {
+static expr_t parse_expr(const uchar **p) {
     token_t tok;
     
-    if (expectBraces) {
-        tok = consume_token(p);
-        if (tok.kind != '{') {
-            error("Expected {");
-        }
-    }
+    // If we parsed none, then error
+    // If we parsed one, then this isn't a juxta but a normal expression
+    // If we parsed more than one, then make this into a juxta chain
+    
+    expr_t first = NULL;
+    expr_t juxta = NULL;
     
     while (1) {
         tok = lookahead_token(p);
         
+        expr_t expr = NULL;
         if (tok.kind == '{') {
-            parse_scope(p);
+            expr = parse_scope(p, TRUE);
         }
-        if (tok.kind == '(') {
-            parse_paren_expr(p);
+        else if (tok.kind == '(') {
+            expr = parse_paren_expr(p);
         }
-        if (tok.kind == '(') {
-            parse_name(p);
+        else if (tok.kind == NAME) {
+            expr = parse_name(p);
         }
-        token_free(tok);
+        else {
+            token_free(tok);
+            break;
+        }
         
+        if (!first) {
+            first = expr;
+        }
+        else if (!juxta) {
+            juxta = calloc(sizeof(struct expr), 1);
+            juxta->kind = EXPR_JUXTA;
+            juxta->juxta.items = list_create(expr_t);
+            list_push(juxta->juxta.items, first);
+        }
+        else {
+            list_push(juxta->juxta.items, first);
+        }
+        
+        token_free(tok);
+    }
+    
+    if (!first)
+        return first;
+    return juxta;
+}
+static expr_t parse_paren_expr(const uchar **p) {
+    token_t tok;
+    
+    // Consume '('
+    tok = consume_token(p);
+    if (tok.kind != '(')
+        error("Expected (");
+    
+    expr_t expr = parse_expr(p);
+    
+    // Consume ')'
+    tok = consume_token(p);
+    if (tok.kind != ')')
+        error("Expected )");
+    
+    return expr;
+}
+static expr_t parse_name(const uchar **p) {
+    
+    // Consume NAME
+    token_t tok = consume_token(p);
+    if (tok.kind != NAME)
+        error("Expected name");
+    
+    expr_t expr = calloc(sizeof(struct expr), 1);
+    expr->kind = EXPR_NAME;
+    expr->name.name = tok.name;
+    
+    return expr;
+}
+static expr_t parse_scope(const uchar **p, _Bool expectBraces) {
+    token_t tok;
+    
+    expr_t expr = calloc(sizeof(struct expr), 1);
+    expr->kind = EXPR_SCOPE;
+    expr->scope.items = list_create(expr_t);
+    
+    if (expectBraces) {
+        tok = consume_token(p);
+        if (tok.kind != '{')
+            error("Expected {");
+    }
+    
+    while (1) {
+        expr_t expr = parse_expr(p);
+        
+        list_push(expr->scope.items, expr);
         
         tok = consume_token(p);
         if (tok.kind == NEWLINE)
@@ -191,6 +265,8 @@ expr_scope_t parse_scope(const uchar **p, _Bool expectBraces) {
         else
             error("Expected newline or end-of-file");
     }
+    
+    return expr;
 }
 
 
